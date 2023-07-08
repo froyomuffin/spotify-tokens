@@ -1,157 +1,22 @@
 #!/bin/ruby
 
-require "socket"
-require "faraday"
-require "base64"
-require "json"
-
-class CodeReceiver
-  EXTRACTION_PATTERN = /GET \/callback\?code=(.*?) HTTP.*/
-
-  def initialize(port:)
-    @server = TCPServer.new("127.0.0.1", port)
-  end
-
-  def listen
-    @thread = Thread.new do
-      session = @server.accept
-      request = session.gets
-
-      match = EXTRACTION_PATTERN.match(request)
-      @code = match[1]
-
-      session.print("HTTP/1.1 200/OK\r\n")
-      session.print("Content-Type: text/html\r\n")
-      session.print("\r\n")
-      session.print("You may close this now. Received code: #{@code}\r\n\r\n")
-
-      session.close
-    end
-  end
-
-  def code
-    @thread.join
-    @code
-  end
-end
-
-class TokenGenerator
-  ACCOUNT_BASE_URL = "https://accounts.spotify.com"
-  PORT = 8888
-  REDIRECT_URI = "http://localhost:#{PORT}/callback"
-
-  def initialize(client_id:, client_secret:)
-    @client_id = client_id
-    @authorization = Base64.strict_encode64("#{client_id}:#{client_secret}")
-  end
-
-  def generate
-    get_code
-    get_refresh_token
-    get_access_token
-
-    puts "Refresh Token:"
-    puts @refresh_token
-
-    puts
-
-    puts "Access Token:"
-    puts @access_token
-  end
-
-  private
-
-  def get_code
-    connection = Faraday.new(url: ACCOUNT_BASE_URL)
-
-    scopes = %w(
-      user-read-playback-state
-      user-modify-playback-state
-      user-read-currently-playing
-      app-remote-control
-      streaming
-      playlist-read-private
-      playlist-read-collaborative
-      playlist-modify-private
-      playlist-modify-public
-    ).join(" ")
-
-    response = connection.get(
-      "/authorize",
-      {
-        response_type: "code",
-        client_id: @client_id,
-        scope: scopes,
-        redirect_uri: REDIRECT_URI,
-      },
-    )
-
-    redirect = response.headers["location"]
-
-    receiver = CodeReceiver.new(port: PORT)
-    receiver.listen
-
-    puts "Open this URL: #{redirect}"
-
-    @code = receiver.code
-    puts
-  end
-
-  def get_refresh_token
-    headers = {
-      "Authorization" => "Basic #{@authorization}",
-      "Content-Type" => "application/x-www-form-urlencoded",
-    }
-    
-    params = {
-      grant_type: "authorization_code",
-      code: @code,
-      redirect_uri: REDIRECT_URI,
-    }
-
-    connection = Faraday.new(
-      url: ACCOUNT_BASE_URL,
-      params: params,
-      headers: headers
-    )
-
-    response = connection.post("/api/token") do |req|
-      req.params = params
-    end
-
-    @refresh_token = JSON.parse(response.body)["refresh_token"]
-  end
-
-  def get_access_token
-    headers = {
-      "Authorization" => "Basic #{@authorization}",
-      "Content-Type" => "application/x-www-form-urlencoded",
-    }
-
-    params = {
-      grant_type: "refresh_token",
-      refresh_token: @refresh_token,
-    }
-
-    connection = Faraday.new(
-      url: ACCOUNT_BASE_URL,
-      params: params,
-      headers: headers
-    )
-
-    response = connection.post("/api/token") do |req|
-      req.params = params
-    end
-
-    @access_token = JSON.parse(response.body)["access_token"]
-  end
-end
+require_relative "token_generator"
 
 puts "Starting..."
 
-generator = TokenGenerator.new(
-  client_id: ENV["SPOTIFY_CLIENT_ID"],
-  client_secret: ENV["SPOTIFY_CLIENT_SECRET"],
-)
-
-generator.generate
+command = ARGV[0]
+case command
+when "get-token"
+  TokenGenerator.new(
+    client_id: ENV["SPOTIFY_CLIENT_ID"],
+    client_secret: ENV["SPOTIFY_CLIENT_SECRET"],
+    refresh_token: ENV["SPOTIFY_REFRESH_TOKEN"],
+  ).generate
+when "get-fresh-token"
+  TokenGenerator.new(
+    client_id: ENV["SPOTIFY_CLIENT_ID"],
+    client_secret: ENV["SPOTIFY_CLIENT_SECRET"],
+  ).generate
+else
+  puts "Unknown command \"#{command}\""
+end
