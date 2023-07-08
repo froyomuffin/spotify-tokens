@@ -30,6 +30,8 @@ class TokenGenerator
 
     puts "Access Token:"
     puts @access_token
+
+    return @access_token
   end
 
   private
